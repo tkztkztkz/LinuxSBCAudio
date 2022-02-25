@@ -48,7 +48,7 @@ struct ak449x_priv {
 	int chmode; // bit1: mono, bit0:sellr
 	int phase;
 
-	struct snd_soc_codec_driver *codec_drv;
+	struct snd_soc_component_driver *component_drv;
 #ifdef AK449X_SUPPORT_MULTICODEC_MIXER
 	int    mcvol_lch;
 	int    mcvol_rch;
@@ -299,8 +299,8 @@ static const struct soc_enum ak449x_ats_enum =
 static int get_digfil(struct snd_kcontrol *kcontrol,
 		      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.enumerated.item[0] = ak449x->digfil;
 
@@ -310,8 +310,8 @@ static int get_digfil(struct snd_kcontrol *kcontrol,
 static int set_digfil(struct snd_kcontrol *kcontrol,
 		      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 	int num;
 
 	num = ucontrol->value.enumerated.item[0];
@@ -321,17 +321,17 @@ static int set_digfil(struct snd_kcontrol *kcontrol,
 	ak449x->digfil = num;
 
 	/* write SD bit */
-	snd_soc_update_bits(codec, AK449X_01_CONTROL2,
+	snd_soc_component_update_bits(component, AK449X_01_CONTROL2,
 			    AK449X_SD_MASK,
 			    ((ak449x->digfil & 0x02) << 4));
 
 	/* write SLOW bit */
-	snd_soc_update_bits(codec, AK449X_02_CONTROL3,
+	snd_soc_component_update_bits(component, AK449X_02_CONTROL3,
 			    AK449X_SLOW_MASK,
 			    (ak449x->digfil & 0x01));
 
 	/* write SSLOW bit */
-	snd_soc_update_bits(codec, AK449X_05_CONTROL4,
+	snd_soc_component_update_bits(component, AK449X_05_CONTROL4,
 			    AK449X_SSLOW_MASK,
 			    ((ak449x->digfil & 0x04) >> 2));
 
@@ -401,69 +401,86 @@ static const char * const ak449x_mc_texts_table[][32] = {
 	MULTICODEC_TEXTS(ATS),
 };
 
+static int chain_mixer(struct ak449x_priv *ak449x,
+		struct snd_soc_component *component,
+	 	struct snd_kcontrol *kcontrol,
+        struct snd_ctl_elem_value *ucontrol,
+		int (*func)(struct snd_kcontrol *kcontrol,
+        			struct snd_ctl_elem_value *ucontrol))
+{
+	int err;
+	if (ak449x->next) {
+		snd_soc_component_set_drvdata(component, ak449x->next);
+		component->regmap = ak449x->next->regmap;
+		err = (*func) (kcontrol, ucontrol);
+		snd_soc_component_set_drvdata(component, ak449x);
+		component->regmap = ak449x->regmap;
+	}
+	return err;
+}
 
 static int get_volsw_mc(struct snd_kcontrol *kcontrol,
         struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-        struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
-        struct soc_mixer_control *mc =
-                (struct soc_mixer_control *)kcontrol->private_value;
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
+	struct soc_mixer_control *mc =
+			(struct soc_mixer_control *)kcontrol->private_value;
 
-        ucontrol->value.integer.value[0] = ak449x->mcvol_lch;
+	ucontrol->value.integer.value[0] = ak449x->mcvol_lch;
 
-        if (snd_soc_volsw_is_stereo(mc)) {
-                ucontrol->value.integer.value[1] = ak449x->mcvol_rch;
-        }
+	if (snd_soc_volsw_is_stereo(mc)) {
+		ucontrol->value.integer.value[1] = ak449x->mcvol_rch;
+	}
 
-        dev_dbg(ak449x->dev, "%s get %d/%d", __FUNCTION__, ak449x->mcvol_lch, ak449x->mcvol_rch);
+	dev_dbg(ak449x->dev, "%s get %d/%d", __FUNCTION__, ak449x->mcvol_lch, ak449x->mcvol_rch);
 
-        return 0;
+	return 0;
 }
 
 
 static int put_volsw_mc(struct snd_kcontrol *kcontrol,
         struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 
 	struct soc_mixer_control *mc =
                 (struct soc_mixer_control *)kcontrol->private_value;
 	unsigned int reg = mc->reg;
 	unsigned int reg2 = mc->rreg;
-        unsigned int shift = mc->shift;
-        unsigned int rshift = mc->rshift;
-        int max = mc->max;
-        int min = mc->min;
-        unsigned int sign_bit = mc->sign_bit;
-        unsigned int mask = (1 << fls(max)) - 1;
-        unsigned int invert = mc->invert;
-        int err;
-        bool type_2r = false;
-        unsigned int val2 = 0;
-        unsigned int val, val_mask;
+	unsigned int shift = mc->shift;
+	unsigned int rshift = mc->rshift;
+	int max = mc->max;
+	int min = mc->min;
+	unsigned int sign_bit = mc->sign_bit;
+	unsigned int mask = (1 << fls(max)) - 1;
+	unsigned int invert = mc->invert;
+	int err;
+	bool type_2r = false;
+	unsigned int val2 = 0;
+	unsigned int val, val_mask;
 
-        if (sign_bit)
-                mask = BIT(sign_bit + 1) - 1;
+	if (sign_bit)
+		mask = BIT(sign_bit + 1) - 1;
 
-        val = ((ucontrol->value.integer.value[0] + min) & mask);
-        if (invert)
-                val = max - val;
-        val_mask = mask << shift;
-        val = val << shift;
-        if (snd_soc_volsw_is_stereo(mc)) {
-                val2 = ((ucontrol->value.integer.value[1] + min) & mask);
-                if (invert)
-                        val2 = max - val2;
-                if (reg == reg2) {
-                        val_mask |= mask << rshift;
-                        val |= val2 << rshift;
-                } else {
-                        val2 = val2 << shift;
-                        type_2r = true;
-                }
-        }
+	val = ((ucontrol->value.integer.value[0] + min) & mask);
+	if (invert)
+		val = max - val;
+	val_mask = mask << shift;
+	val = val << shift;
+	if (snd_soc_volsw_is_stereo(mc)) {
+		val2 = ((ucontrol->value.integer.value[1] + min) & mask);
+		if (invert)
+			val2 = max - val2;
+		if (reg == reg2) {
+			val_mask |= mask << rshift;
+			val |= val2 << rshift;
+		} else {
+			val2 = val2 << shift;
+			type_2r = true;
+		}
+	}
 	ak449x->mcvol_lch = val;
 	if (type_2r) ak449x->mcvol_rch = val2;
 
@@ -473,14 +490,14 @@ static int put_volsw_mc(struct snd_kcontrol *kcontrol,
 	}else{
 		val  = val2; // RCH Volume
 	}
-        err = snd_soc_update_bits(codec, reg, val_mask, val);
+        err = snd_soc_component_update_bits(component, reg, val_mask, val);
 	if (err < 0) {
 		dev_err(ak449x->dev, "%s error %d", __FUNCTION__, err);
 		return err;
 	}
 
 	if (type_2r) {
-		err = snd_soc_update_bits(codec, reg2, val_mask, val2);
+		err = snd_soc_component_update_bits(component, reg2, val_mask, val2);
 		if (err < 0) {
 			dev_err(ak449x->dev, "%s error %d", __FUNCTION__, err);
 		}
@@ -489,13 +506,7 @@ static int put_volsw_mc(struct snd_kcontrol *kcontrol,
 	dev_dbg(ak449x->dev, "%s reg %x set %d / reg %x set %d", __FUNCTION__, reg, val, reg2, val2);
 
 	// chain mixer
-	if (ak449x->next) {
-		snd_soc_codec_set_drvdata(codec, ak449x->next);
-		codec->component.regmap = ak449x->next->regmap;
-		err = put_volsw_mc (kcontrol, ucontrol);
-		snd_soc_codec_set_drvdata(codec, ak449x);
-		codec->component.regmap = ak449x->regmap;
-	}
+	chain_mixer(ak449x, component, kcontrol, ucontrol, &put_volsw_mc);
 
 	return err;
 }
@@ -504,8 +515,8 @@ static int put_volsw_mc(struct snd_kcontrol *kcontrol,
 static int set_digfil_mc(struct snd_kcontrol *kcontrol,
 		      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 	int num;
 	int err;
 
@@ -516,19 +527,19 @@ static int set_digfil_mc(struct snd_kcontrol *kcontrol,
 	ak449x->digfil = num;
 
 	/* write SD bit */
-	err = snd_soc_update_bits(codec, AK449X_01_CONTROL2,
+	err = snd_soc_component_update_bits(component, AK449X_01_CONTROL2,
 			    AK449X_SD_MASK,
 			    ((ak449x->digfil & 0x02) << 4));
 	if (err < 0) dev_err(ak449x->dev, "%s error %d", __FUNCTION__, err);
 
 	/* write SLOW bit */
-	err = snd_soc_update_bits(codec, AK449X_02_CONTROL3,
+	err = snd_soc_component_update_bits(component, AK449X_02_CONTROL3,
 			    AK449X_SLOW_MASK,
 			    (ak449x->digfil & 0x01));
 	if (err < 0) dev_err(ak449x->dev, "%s error %d", __FUNCTION__, err);
 
 	/* write SSLOW bit */
-	err = snd_soc_update_bits(codec, AK449X_05_CONTROL4,
+	err = snd_soc_component_update_bits(component, AK449X_05_CONTROL4,
 			    AK449X_SSLOW_MASK,
 			    ((ak449x->digfil & 0x04) >> 2));
 	if (err < 0) dev_err(ak449x->dev, "%s error %d", __FUNCTION__, err);
@@ -536,52 +547,38 @@ static int set_digfil_mc(struct snd_kcontrol *kcontrol,
 	dev_dbg(ak449x->dev, "%s set %d", __FUNCTION__, num);
 
 	// chain mixer
-	if (ak449x->next) {
-		int ret;
-		snd_soc_codec_set_drvdata(codec, ak449x->next);
-		codec->component.regmap = ak449x->next->regmap;
-		ret = set_digfil_mc (kcontrol, ucontrol);
-		snd_soc_codec_set_drvdata(codec, ak449x);
-		codec->component.regmap = ak449x->regmap;
-	}
+	chain_mixer(ak449x, component, kcontrol, ucontrol, &set_digfil_mc);
 	return 0;
 }
 
 static int put_enum_double_mc(struct snd_kcontrol *kcontrol,
         struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
-        struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
-        unsigned int *item = ucontrol->value.enumerated.item;
-        unsigned int val;
-        unsigned int mask;
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
+	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
+	unsigned int *item = ucontrol->value.enumerated.item;
+	unsigned int val;
+	unsigned int mask;
 	int err;
 
-        if (item[0] >= e->items)
-                return -EINVAL;
-        val = snd_soc_enum_item_to_val(e, item[0]) << e->shift_l;
-        mask = e->mask << e->shift_l;
-        if (e->shift_l != e->shift_r) {
-                if (item[1] >= e->items)
-                        return -EINVAL;
-                val |= snd_soc_enum_item_to_val(e, item[1]) << e->shift_r;
-                mask |= e->mask << e->shift_r;
-        }
+	if (item[0] >= e->items)
+		return -EINVAL;
+	val = snd_soc_enum_item_to_val(e, item[0]) << e->shift_l;
+	mask = e->mask << e->shift_l;
+	if (e->shift_l != e->shift_r) {
+		if (item[1] >= e->items)
+			return -EINVAL;
+		val |= snd_soc_enum_item_to_val(e, item[1]) << e->shift_r;
+		mask |= e->mask << e->shift_r;
+	}
 
-	err = snd_soc_update_bits(codec, e->reg, mask, val);
+	err = snd_soc_component_update_bits(component, e->reg, mask, val);
 
-        // chain mixer
-        if (ak449x->next) {
-                int ret;
-                snd_soc_codec_set_drvdata(codec, ak449x->next);
-                codec->component.regmap = ak449x->next->regmap;
-                ret = put_enum_double_mc(kcontrol, ucontrol);
-                snd_soc_codec_set_drvdata(codec, ak449x);
-                codec->component.regmap = ak449x->regmap;
-        }
+	// chain mixer
+	chain_mixer(ak449x, component, kcontrol, ucontrol, &put_enum_double_mc);
 
-        return err;
+	return err;
 }
 
 
@@ -614,39 +611,39 @@ static struct snd_kcontrol_new ak4493_snd_controls_mc[] = {
 
 
 
-static int ak449x_rstn_control(struct snd_soc_codec *codec, int bit)
+static int ak449x_rstn_control(struct snd_soc_component *component, int bit)
 {
 	int ret;
 
 	if (bit)
-		ret = snd_soc_update_bits(codec,
+		ret = snd_soc_component_update_bits(component,
 					  AK449X_00_CONTROL1,
 					  AK449X_RSTN_MASK,
 					  0x1);
 	else
-		ret = snd_soc_update_bits(codec,
+		ret = snd_soc_component_update_bits(component,
 					  AK449X_00_CONTROL1,
 					  AK449X_RSTN_MASK,
 					  0x0);
 	return ret;
 }
 
-static int ak449x_chmode_set(struct snd_soc_codec *codec)
+static int ak449x_chmode_set(struct snd_soc_component *component)
 {
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 
-	snd_soc_update_bits(codec, AK449X_02_CONTROL3, AK449X_MONO_MASK, ak449x->chmode << 2); /* ((chmod >> 1) << 3) & 0x8 */
-	snd_soc_update_bits(codec, AK449X_02_CONTROL3, AK449X_SELLR_MASK, ak449x->chmode << 1);
+	snd_soc_component_update_bits(component, AK449X_02_CONTROL3, AK449X_MONO_MASK, ak449x->chmode << 2); /* ((chmod >> 1) << 3) & 0x8 */
+	snd_soc_component_update_bits(component, AK449X_02_CONTROL3, AK449X_SELLR_MASK, ak449x->chmode << 1);
 
 	return 0;
 }
 
-static int ak449x_phase_set(struct snd_soc_codec *codec)
+static int ak449x_phase_set(struct snd_soc_component *component)
 {
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 	int ret;
 
-	ret = snd_soc_update_bits(codec, AK449X_05_CONTROL4, AK449X_INV_MASK, ak449x->phase << AK449X_INV_SHIFT);
+	ret = snd_soc_component_update_bits(component, AK449X_05_CONTROL4, AK449X_INV_MASK, ak449x->phase << AK449X_INV_SHIFT);
 
 	return ret;
 }
@@ -655,8 +652,8 @@ static int ak449x_hw_params(struct snd_pcm_substream *substream,
 			    struct snd_pcm_hw_params *params,
 			    struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 	int pcm_width = max(params_physical_width(params), ak449x->slot_width);
 	int nfs1;
 	u8 format;
@@ -665,9 +662,9 @@ static int ak449x_hw_params(struct snd_pcm_substream *substream,
 	nfs1 = params_rate(params);
 	ak449x->fs = nfs1;
 
-	dev_dbg(codec->dev, "%s pcm_width = %d, fmt = %x\n", __FUNCTION__, pcm_width, ak449x->fmt);
+	dev_dbg(ak449x->dev, "%s pcm_width = %d, fmt = %x\n", __FUNCTION__, pcm_width, ak449x->fmt);
 	/* Master Clock Frequency Auto Setting Mode Enable */
-	snd_soc_update_bits(codec, AK449X_00_CONTROL1, 0x80, 0x80);
+	snd_soc_component_update_bits(component, AK449X_00_CONTROL1, 0x80, 0x80);
 
 	switch (pcm_width) {
 	case 16:
@@ -710,21 +707,21 @@ static int ak449x_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	snd_soc_update_bits(codec, AK449X_00_CONTROL1, AK449X_DIF_MASK, format);
-	dev_dbg(codec->dev, "%s set dif format = %x\n", __FUNCTION__, format);
+	snd_soc_component_update_bits(component, AK449X_00_CONTROL1, AK449X_DIF_MASK, format);
+	dev_dbg(ak449x->dev, "%s set dif format = %x\n", __FUNCTION__, format);
 
-	ak449x_rstn_control(codec, 0);
-	ak449x_rstn_control(codec, 1);
+	ak449x_rstn_control(component, 0);
+	ak449x_rstn_control(component, 1);
 
 	return 0;
 }
 
 static int ak449x_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 
-	dev_dbg(codec->dev, "%s fmt = %d\n", __FUNCTION__, fmt);
+	dev_dbg(ak449x->dev, "%s fmt = %d\n", __FUNCTION__, fmt);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
 	case SND_SOC_DAIFMT_CBS_CFS: /* Slave Mode */
@@ -733,7 +730,7 @@ static int ak449x_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	case SND_SOC_DAIFMT_CBS_CFM:
 	case SND_SOC_DAIFMT_CBM_CFS:
 	default:
-		dev_warn(codec->dev, "Master mode required external I2S master.\n");
+		dev_warn(ak449x->dev, "Master mode required external I2S master.\n");
 	}
 
 	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
@@ -744,7 +741,7 @@ static int ak449x_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		ak449x->fmt = fmt & SND_SOC_DAIFMT_FORMAT_MASK;
 		break;
 	default:
-		dev_err(codec->dev, "Audio format 0x%02X unsupported\n",
+		dev_err(ak449x->dev, "Audio format 0x%02X unsupported\n",
 			fmt & SND_SOC_DAIFMT_FORMAT_MASK);
 		return -EINVAL;
 	}
@@ -754,14 +751,14 @@ static int ak449x_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 
 static const int att_speed[] = { 4080, 2040, 510, 255 };
 
-static int ak449x_set_dai_mute(struct snd_soc_dai *dai, int mute)
+static int ak449x_set_dai_mute(struct snd_soc_dai *dai, int mute, int stream)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 	int nfs, ndt, ret, reg;
 	int ats;
 
-	dev_dbg(codec->dev, "%s mute = %d\n", __FUNCTION__, mute);
+	dev_dbg(ak449x->dev, "%s mute = %d\n", __FUNCTION__, mute);
 
 	/* state check */
 	if ( ak449x->mute == mute ) {
@@ -773,7 +770,7 @@ static int ak449x_set_dai_mute(struct snd_soc_dai *dai, int mute)
 	nfs = ak449x->fs;
 	if(ak449x->chip == AK449X_CHIP_AK4493 || ak449x->chip == AK449X_CHIP_AK4497) {
 	       	// for AK4493/4497 variable rate
-		reg = snd_soc_read(codec, AK449X_0B_CONTROL7);
+		reg = snd_soc_component_read(component, AK449X_0B_CONTROL7);
 		ats = (reg & AK449X_ATS_MASK) >> AK449X_ATS_SHIFT;
 
 		ndt = att_speed[ats] / (nfs / 1000);
@@ -782,14 +779,14 @@ static int ak449x_set_dai_mute(struct snd_soc_dai *dai, int mute)
 	}
 
 	if (mute) {
-		ret = snd_soc_update_bits(codec, AK449X_01_CONTROL2, 0x01, 1);
+		ret = snd_soc_component_update_bits(component, AK449X_01_CONTROL2, 0x01, 1);
 		mdelay(ndt);
 		if (ak449x->mute_gpiod)
 			gpiod_set_value_cansleep(ak449x->mute_gpiod, 1);
 	} else {
 		if (ak449x->mute_gpiod)
 			gpiod_set_value_cansleep(ak449x->mute_gpiod, 0);
-		ret = snd_soc_update_bits(codec, AK449X_01_CONTROL2, 0x01, 0);
+		ret = snd_soc_component_update_bits(component, AK449X_01_CONTROL2, 0x01, 0);
 		mdelay(ndt);
 	}
 
@@ -879,9 +876,9 @@ static int ak449x_startup(struct snd_pcm_substream *substream,
 
 static struct snd_soc_dai_ops ak449x_dai_ops = {
 	.startup        = ak449x_startup,
-	.hw_params	= ak449x_hw_params,
-	.set_fmt	= ak449x_set_dai_fmt,
-	.digital_mute	= ak449x_set_dai_mute,
+	.hw_params		= ak449x_hw_params,
+	.set_fmt		= ak449x_set_dai_fmt,
+	.mute_stream	= ak449x_set_dai_mute,
 };
 
 static struct snd_soc_dai_driver ak449x_dai = {
@@ -917,12 +914,12 @@ static void ak449x_power_on(struct ak449x_priv *ak449x)
 	}
 }
 
-static int ak449x_init(struct snd_soc_codec *codec)
+static int ak449x_init(struct snd_soc_component *component)
 {
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 	int err;
 
-	dev_dbg(codec->dev, "%s\n", __FUNCTION__);
+	dev_dbg(ak449x->dev, "%s\n", __FUNCTION__);
 	/* External Mute ON */
 	if (ak449x->mute_gpiod)
 		gpiod_set_value_cansleep(ak449x->mute_gpiod, 1);
@@ -932,38 +929,36 @@ static int ak449x_init(struct snd_soc_codec *codec)
 	if (ak449x_reset == -1 ) ak449x_power_off(ak449x);
 	ak449x_power_on(ak449x);
 
-	snd_soc_read(codec, AK449X_00_CONTROL1); /* dummy read */
-	err = snd_soc_update_bits(codec, AK449X_00_CONTROL1, 0x80, 0x80);   /* ACKS bit = 1; 10000000 */
+	snd_soc_component_read(component, AK449X_00_CONTROL1); /* dummy read */
+	err = snd_soc_component_update_bits(component, AK449X_00_CONTROL1, 0x80, 0x80);   /* ACKS bit = 1; 10000000 */
 
 	if (err < 0) {
-		dev_err(codec->dev, "i2c failed.");
+		dev_err(ak449x->dev, "i2c failed.");
 		return err;
 	}
-	ak449x_chmode_set(codec);
-	ak449x_phase_set(codec);
-	ak449x_rstn_control(codec, 1);
+	ak449x_chmode_set(component);
+	ak449x_phase_set(component);
+	ak449x_rstn_control(component, 1);
 
 	return 0;
 }
 
-static int ak449x_probe(struct snd_soc_codec *codec)
+static int ak449x_probe(struct snd_soc_component *component)
 {
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
 
-	dev_dbg(codec->dev, "%s\n", __FUNCTION__);
+	dev_dbg(ak449x->dev, "%s\n", __FUNCTION__);
 
 	ak449x->fs = 48000;
 
-	return ak449x_init(codec);
+	return ak449x_init(component);
 }
 
-static int ak449x_remove(struct snd_soc_codec *codec)
+static void ak449x_remove(struct snd_soc_component *component)
 {
-	struct ak449x_priv *ak449x = snd_soc_codec_get_drvdata(codec);
-        dev_dbg(ak449x->dev, "%s\n", __FUNCTION__);
+	struct ak449x_priv *ak449x = snd_soc_component_get_drvdata(component);
+    dev_dbg(ak449x->dev, "%s\n", __FUNCTION__);
 	ak449x_power_off(ak449x);
-
-	return 0;
 }
 
 
@@ -1034,20 +1029,20 @@ int ak449x_setup_controls(struct ak449x_priv *ak449x)
 	struct snd_kcontrol_new *controls_mc = NULL;
 #endif
 	// allocate
-	if (ak449x->codec_drv) {
+	if (ak449x->component_drv) {
 		return -1;
 	}
-	ak449x->codec_drv = devm_kzalloc(ak449x->dev, sizeof(*ak449x->codec_drv), GFP_KERNEL);
-	if (ak449x->codec_drv == NULL)
+	ak449x->component_drv = devm_kzalloc(ak449x->dev, sizeof(*ak449x->component_drv), GFP_KERNEL);
+	if (ak449x->component_drv == NULL)
 		return -ENOMEM;
 
 	// setup basic controls
-	ak449x->codec_drv->probe			= ak449x_probe;
-	ak449x->codec_drv->remove			= ak449x_remove;
-	ak449x->codec_drv->component_driver.dapm_widgets	= ak449x_dapm_widgets;
-	ak449x->codec_drv->component_driver.num_dapm_widgets	= ARRAY_SIZE(ak449x_dapm_widgets);
-	ak449x->codec_drv->component_driver.dapm_routes		= ak449x_intercon;
-	ak449x->codec_drv->component_driver.num_dapm_routes	= ARRAY_SIZE(ak449x_intercon);
+	ak449x->component_drv->probe			= ak449x_probe;
+	ak449x->component_drv->remove			= ak449x_remove;
+	ak449x->component_drv->dapm_widgets		= ak449x_dapm_widgets;
+	ak449x->component_drv->num_dapm_widgets	= ARRAY_SIZE(ak449x_dapm_widgets);
+	ak449x->component_drv->dapm_routes		= ak449x_intercon;
+	ak449x->component_drv->num_dapm_routes	= ARRAY_SIZE(ak449x_intercon);
 
 	// Select control override
 	if (ak449x->chip == AK449X_CHIP_AK4490) {
@@ -1108,16 +1103,16 @@ int ak449x_setup_controls(struct ak449x_priv *ak449x)
 		controls = tmp_controls;
 #endif
 		dev_info(ak449x->dev, "stereo mixer controls registered");
-		ak449x->codec_drv->component_driver.controls = controls; 
-		ak449x->codec_drv->component_driver.num_controls = num_controls;
+		ak449x->component_drv->controls = controls; 
+		ak449x->component_drv->num_controls = num_controls;
 	}else{
 #ifdef AK449X_SUPPORT_MULTICODEC_MIXER
 		mutex_lock( &ak449x_lock);
 		if ( ak449x_master == NULL ) {
 			ak449x_master = ak449x;
 
-			ak449x->codec_drv->component_driver.controls = controls_mc;
-			ak449x->codec_drv->component_driver.num_controls = num_controls_mc;
+			ak449x->component_drv->controls = controls_mc;
+			ak449x->component_drv->num_controls = num_controls_mc;
 			dev_info(ak449x->dev, "multi-codec master controls registered");
 		}else{
 			struct ak449x_priv *ak449x_search = ak449x_master;
@@ -1185,7 +1180,7 @@ static int ak449x_i2c_probe(struct i2c_client *i2c)
 	}
 
 	// register codec
-	ret = snd_soc_register_codec(ak449x->dev, ak449x->codec_drv, &ak449x_dai, 1);
+	ret = devm_snd_soc_register_component(ak449x->dev, ak449x->component_drv, &ak449x_dai, 1);
 	if (ret < 0) {
 		dev_err(ak449x->dev, "Failed to register CODEC: %d\n", ret);
 		return ret;
@@ -1208,6 +1203,7 @@ static const struct of_device_id ak449x_of_match[] = {
 	{ .compatible = "asahi-kasei,ak449x", },
 	{ },
 };
+MODULE_DEVICE_TABLE(of, ak449x_of_match);
 
 static struct i2c_driver ak449x_i2c_driver = {
 	.driver = {

@@ -23,20 +23,21 @@ struct nullcodec_priv {
 	struct gpio_desc *reset_gpiod;
 	struct gpio_desc *mute_gpiod;
 	struct gpio_desc *x4_gpiod;
+	struct gpio_desc *prestart_gpiod;
 
 	int mute;
 	unsigned long mute_prewait;
 	unsigned long mute_postwait;
 	unsigned long reset_holdtime;
+	unsigned long reset_postwait;
 	unsigned long x4_freq;
 };
 
-static int nullcodec_set_dai_mute(struct snd_soc_dai *dai, int mute)
+static int nullcodec_set_dai_mute(struct snd_soc_dai *dai, int mute, int stream)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct nullcodec_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct nullcodec_priv *priv = dev_get_drvdata(dai->dev);
 
-	dev_dbg(codec->dev, "%s mute = %d\n", __FUNCTION__, mute);
+	dev_dbg(dai->dev, "%s mute = %d\n", __FUNCTION__, mute);
 
 	/* state check */
 	if ( priv->mute == mute ) {
@@ -64,13 +65,14 @@ static int nullcodec_set_dai_mute(struct snd_soc_dai *dai, int mute)
 static int nullcodec_startup(struct snd_pcm_substream *substream,
 		struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct nullcodec_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct nullcodec_priv *priv = dev_get_drvdata(dai->dev);
 
 	if (priv->reset_gpiod) {
+		dev_info(priv->dev, "device reset");
 		gpiod_set_value_cansleep(priv->reset_gpiod, 1);
 		mdelay(priv->reset_holdtime);
 		gpiod_set_value_cansleep(priv->reset_gpiod, 0);
+		mdelay(priv->reset_postwait);
 	}
 
 	return 0;
@@ -80,8 +82,7 @@ static int nullcodec_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *params,
 		struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct nullcodec_priv *priv = snd_soc_codec_get_drvdata(codec);
+	struct nullcodec_priv *priv = dev_get_drvdata(dai->dev);
 
 	if (priv->x4_gpiod) {
 		gpiod_set_value_cansleep(priv->x4_gpiod, params_rate(params) >= priv->x4_freq);
@@ -95,7 +96,7 @@ static struct snd_soc_dai_ops nullcodec_dai_ops = {
 	.startup        = nullcodec_startup,
 	.hw_params      = nullcodec_hw_params,
 	//        .set_fmt        = nullcodec_set_dai_fmt,
-	.digital_mute   = nullcodec_set_dai_mute,
+	.mute_stream    = nullcodec_set_dai_mute,
 };
 
 
@@ -114,7 +115,12 @@ static struct snd_soc_dai_driver nullcodec_dai = {
 	.ops = &nullcodec_dai_ops,
 };
 
-static struct snd_soc_codec_driver soc_codec_dev_nullcodec;
+static struct snd_soc_component_driver soc_component_dev_nullcodec = {
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
+};
 
 static int nullcodec_probe(struct platform_device *pdev)
 {
@@ -148,6 +154,11 @@ static int nullcodec_probe(struct platform_device *pdev)
 		return PTR_ERR(priv->x4_gpiod);
 	}
 
+	priv->prestart_gpiod = devm_gpiod_get_optional(&pdev->dev, "prestart", GPIOD_OUT_LOW);
+	if (IS_ERR(priv->prestart_gpiod)) {
+		dev_err(&pdev->dev, "error requesting x4-gpios: %ld\n", PTR_ERR(priv->prestart_gpiod));
+		return PTR_ERR(priv->prestart_gpiod);
+	}
 
 	// setup parameters
 	ret = of_property_read_u32(pdev->dev.of_node, "max_rate", &val);
@@ -201,6 +212,11 @@ static int nullcodec_probe(struct platform_device *pdev)
 		dev_info(&pdev->dev, "reset hold time set to %d ms", val);
 		priv->reset_holdtime = val;
 	}
+	ret = of_property_read_u32(pdev->dev.of_node, "reset_postwait", &val);
+	if (ret == 0){
+		dev_info(&pdev->dev, "reset post wait set to %d ms", val);
+		priv->reset_postwait = val;
+	}
 
 	priv->x4_freq = 100000;
 	ret = of_property_read_u32(pdev->dev.of_node, "x4_freq", &val);
@@ -211,13 +227,7 @@ static int nullcodec_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(&pdev->dev, priv);
 
-	return snd_soc_register_codec(&pdev->dev, &soc_codec_dev_nullcodec,	&nullcodec_dai, 1);
-}
-
-static int nullcodec_remove(struct platform_device *pdev)
-{
-	snd_soc_unregister_codec(&pdev->dev);
-	return 0;
+	return devm_snd_soc_register_component(&pdev->dev, &soc_component_dev_nullcodec,	&nullcodec_dai, 1);
 }
 
 static const struct of_device_id nullcodec_of_match[] = {
@@ -228,7 +238,6 @@ MODULE_DEVICE_TABLE(of, nullcodec_of_match);
 
 static struct platform_driver nullcodec_driver = {
 	.probe		= nullcodec_probe,
-	.remove		= nullcodec_remove,
 	.driver		= {
 		.name	= "nullcodec",
 		.of_match_table = nullcodec_of_match,

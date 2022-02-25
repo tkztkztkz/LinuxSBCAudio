@@ -80,6 +80,10 @@ struct i2smfdl_priv {
 	int clksel_order;
 	unsigned int intpll_fallback;
 
+	// 3clk mode
+	unsigned int last_mclk;
+	unsigned int mclk_transition_wait;
+
 	// fs limit
 	unsigned int max_rate;
 	unsigned int min_rate;
@@ -143,7 +147,7 @@ static int snd_i2smfdl_set_daifmt(struct snd_pcm_substream *substream, unsigned 
 	unsigned int dai_fmt_prev = dai->dai_fmt;
 
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct i2smfdl_priv *i2smfdl = snd_soc_card_get_drvdata(card);
 
@@ -169,7 +173,7 @@ static int snd_i2smfdl_select_fixed_clk(struct snd_pcm_substream *substream, str
 	int err = -1;
 
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct i2smfdl_priv *i2smfdl = snd_soc_card_get_drvdata(card);
 
@@ -220,7 +224,7 @@ static int snd_i2smfdl_select_variable_clk(struct snd_pcm_substream *substream, 
 	int err = -1;
 
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct i2smfdl_priv *i2smfdl = snd_soc_card_get_drvdata(card);
 
@@ -272,7 +276,7 @@ static int snd_i2smfdl_select_intpll_clk(struct snd_pcm_substream *substream, st
 	int err = 0;
 
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct i2smfdl_priv *i2smfdl = snd_soc_card_get_drvdata(card);
 
@@ -341,7 +345,7 @@ static int snd_i2smfdl_set_ext3clk(struct snd_pcm_substream *substream, struct s
 	int err = 0;
 
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_card *card = rtd->card;
 	struct i2smfdl_priv *i2smfdl = snd_soc_card_get_drvdata(card);
 
@@ -373,10 +377,26 @@ static int snd_i2smfdl_set_ext3clk(struct snd_pcm_substream *substream, struct s
 	/* clk setup */
 	snd_i2smfdl_set_daifmt(substream, SND_SOC_DAIFMT_CBM_CFM);
 
-	if (!IS_ERR(i2smfdl->clks[0].clk)) clk_set_rate(i2smfdl->clks[0].clk, mclk);
+	if ( i2smfdl->last_mclk != mclk ) {
+		dev_dbg(rtd->dev, "setup mclk");
+		clk_disable_unprepare(i2smfdl->clks[0].clk);
+		clk_disable_unprepare(i2smfdl->clks[1].clk);
+		clk_disable_unprepare(i2smfdl->clks[2].clk);
+		mdelay(100);
+		if (i2smfdl->mclk_transition_wait) {
+			dev_dbg(rtd->dev, "mclk transition wait %d ms", i2smfdl->mclk_transition_wait);
+			msleep(i2smfdl->mclk_transition_wait);
+		}
+		if (!IS_ERR(i2smfdl->clks[0].clk)) clk_set_rate(i2smfdl->clks[0].clk, mclk);
+		clk_prepare_enable(i2smfdl->clks[0].clk);
+		i2smfdl->last_mclk = mclk;
+	}
+	dev_dbg(rtd->dev, "setup bclk");;
 	if (!IS_ERR(i2smfdl->clks[1].clk)) clk_set_rate(i2smfdl->clks[1].clk, bclk);
+	dev_dbg(rtd->dev, "setup lrclk");;
 	if (!IS_ERR(i2smfdl->clks[2].clk)) clk_set_rate(i2smfdl->clks[2].clk, lrclk);
 
+	dev_dbg(rtd->dev, "prepare clk");;
 	if (!IS_ERR(i2smfdl->clks[0].clk)) clk_prepare_enable(i2smfdl->clks[0].clk);
 	if (!IS_ERR(i2smfdl->clks[1].clk)) clk_prepare_enable(i2smfdl->clks[1].clk);
 	if (!IS_ERR(i2smfdl->clks[2].clk)) clk_prepare_enable(i2smfdl->clks[2].clk);
@@ -544,7 +564,7 @@ static void snd_i2smfdl_shutdown(
 	struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 
 	dev_dbg(rtd->dev, "%s" , __FUNCTION__);
 
@@ -561,7 +581,7 @@ static struct snd_soc_ops snd_i2smfdl_ops = {
 static struct snd_soc_dai_link snd_i2smfdl_dai[] = {
 {
 	.name		= "i2s-mfdl",
-	.stream_name	= "I2S Multi Function Dai Link",
+	.stream_name	= "I2S_MFDL",
 	.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 				SND_SOC_DAIFMT_CBM_CFS,
 	.ops		= &snd_i2smfdl_ops,
@@ -572,7 +592,7 @@ static struct snd_soc_dai_link snd_i2smfdl_dai[] = {
 /* audio machine driver */
 static struct snd_soc_card snd_i2smfdl = {
 	.name         = "snd_i2smfdl",
-	.driver_name  = "MultiFunsionDaiLinkDriver",
+	.driver_name  = "I2S_MFDL",
 	.owner        = THIS_MODULE,
 	.dai_link     = snd_i2smfdl_dai,
 	.num_links    = ARRAY_SIZE(snd_i2smfdl_dai),
@@ -714,6 +734,7 @@ static void snd_i2smfdl_parse_device_tree_options(struct device *dev, struct i2s
 		}
 
 		dev_info(dev, "clkmode = %s\n", output);
+		dev_info(dev, "dai_fmt = %xh\n", dai->dai_fmt);
 	}
 
 
@@ -778,6 +799,9 @@ static void snd_i2smfdl_parse_device_tree_options(struct device *dev, struct i2s
 		if ((dai->dai_fmt & SND_SOC_DAIFMT_MASTER_MASK) != SND_SOC_DAIFMT_CBM_CFM ) {
 			dev_warn(dev, "dai_fmt not set CBM_CFM mode in ext 3clk mode.");
 		}
+
+		i2smfdl->last_mclk = 0;
+		of_property_read_u32(dev->of_node, "mclk_transition_wait", &i2smfdl->mclk_transition_wait);
 	}
 
 	/* setup clock calculate options */
@@ -823,8 +847,14 @@ static int snd_i2smfdl_probe(struct platform_device *pdev)
 		// find i2s controller
 		i2s_node = of_parse_phandle(pdev->dev.of_node, "i2s-controller", 0);
 		if (i2s_node) {
-			dai->cpu_of_node = i2s_node;
-			dai->platform_of_node = i2s_node;
+			struct snd_soc_dai_link_component *comp;
+			comp = devm_kzalloc(&pdev->dev, sizeof(struct snd_soc_dai_link_component)*2, GFP_KERNEL);
+			dai->num_cpus = 1;
+			dai->cpus = &comp[0];
+			dai->cpus->of_node = i2s_node;
+			dai->num_platforms = 1;
+			dai->platforms = &comp[1];
+			dai->platforms->of_node = i2s_node;
 		}
 
 		// find i2s codecs
@@ -835,10 +865,6 @@ static int snd_i2smfdl_probe(struct platform_device *pdev)
 			int i;
 
 			dev_info(&pdev->dev, "%s: i2s-codec sound-dai = %d", __func__, cnt);
-
-			dai->codec_name = NULL;
-			dai->codec_dai_name = NULL;
-			dai->codec_of_node = NULL;
 
 			codecs = devm_kzalloc(&pdev->dev, sizeof(struct snd_soc_dai_link_component)*cnt, GFP_KERNEL);
 			if (!codecs)
@@ -880,9 +906,9 @@ static int snd_i2smfdl_probe(struct platform_device *pdev)
 					dev_err(&pdev->dev, "%s: Can't find codec by \"i2s-auxdev\"\n", __func__);
 					return 0;
 				}
-				auxdevs[i].codec_of_node = args.np;
-				auxdevs[i].name    = args.np->name;
-				dev_dbg(&pdev->dev, "add aux dev %s", auxdevs[i].name);
+				auxdevs[i].dlc.of_node = args.np;
+				auxdevs[i].dlc.name    = args.np->name;
+				dev_dbg(&pdev->dev, "add aux dev %s", auxdevs[i].dlc.name);
 			}
 			snd_i2smfdl.aux_dev = auxdevs;
 			snd_i2smfdl.num_aux_devs = cnt;
