@@ -1,14 +1,17 @@
 /*
- * Allwinner sun8i I2S sound card
+ * Allwinner sun8i I2S sound card for NanoPi NEO/NEO2 series
  *
  * Copyright (C) 2016 Jean-Francois Moine <moinejf at free.fr>
  * Copyright (C) 2017 Anthony Lee <don.anthony.lee at gmail.com>
+ * Copyright (C) 2017-2022 __tkz__ <tkz at lrclk.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
  * published by the Free Software Foundation; either version 2 of
  * the License, or (at your option) any later version.
  */
+
+#define DEBUG
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -24,19 +27,11 @@
 #include <linux/of_device.h>
 #include <linux/of_graph.h>
 
-#if (1)
-#define DBGOUT(msg...)		do { printk(KERN_ERR msg); } while (0)
-#else
-#define DBGOUT(msg...)		do {} while (0)
-#endif
-
-
 #define MAX_CODECS_NUM (4)
 
 /* --- hardware --- */
 
 #define I2S_CTL 	  	0x00
-	/* common */
 	#define I2S_CTL_SDOEN_MSK	(0x0f00)
 	#define I2S_CTL_SDO3EN		BIT(11)
 	#define I2S_CTL_SDO2EN		BIT(10)
@@ -46,10 +41,6 @@
 	#define I2S_CTL_TXEN		BIT(2)
 	#define I2S_CTL_RXEN		BIT(1)
 	#define I2S_CTL_GEN		BIT(0)
-	/* a83t */
-	#define I2S_CTL_A83T_MS		BIT(5)
-	#define I2S_CTL_A83T_PCM	BIT(4)
-	/* h3 */
 	#define I2S_CTL_H3_BCLKOUT	BIT(18)
 	#define I2S_CTL_H3_LRCKOUT	BIT(17)
 	#define I2S_CTL_H3_MODE_MSK	(3 << 4)
@@ -57,19 +48,6 @@
 	#define I2S_CTL_H3_MODE_RGT	(2 << 4)
 
 #define I2S_FAT0 		0x04
-	/* common */
-	/* a83t */
-	#define I2S_FAT0_A83T_LRCP		BIT(7)
-	#define I2S_FAT0_A83T_BCP		BIT(6)
-	#define I2S_FAT0_A83T_SR_16BIT		(0 << 4)
-	#define I2S_FAT0_A83T_SR_24BIT		(2 << 4)
-	#define I2S_FAT0_A83T_SR_MSK		(3 << 4)
-	#define I2S_FAT0_A83T_WSS_32BCLK	(3 << 2)
-	#define I2S_FAT0_A83T_FMT_I2S1		(0 << 0)
-	#define I2S_FAT0_A83T_FMT_LFT		(1 << 0)
-	#define I2S_FAT0_A83T_FMT_RGT		(2 << 0)
-	#define I2S_FAT0_A83T_FMT_MSK		(3 << 0)
-	/* h3 */
 	#define I2S_FAT0_H3_LRCKR_PERIOD(v) ((v) << 20)
 	#define I2S_FAT0_H3_LRCKR_PERIOD_MSK (0x3ff << 20)
 	#define I2S_FAT0_H3_LRCK_POLARITY	BIT(19)
@@ -104,21 +82,12 @@
 	/* common */
 	#define I2S_CLKD_BCLKDIV(v)	((v) << 4)
 	#define I2S_CLKD_MCLKDIV(v)	((v) << 0)
-	/* a83t */
-	#define I2S_CLKD_A83T_MCLKOEN	BIT(7)
-	/* h3 */
 	#define I2S_CLKD_H3_MCLKOEN	BIT(8)
 
 #define I2S_TXCNT  		0x28
 
 #define I2S_RXCNT  		0x2c
 
-/* --- A83T --- */
-#define I2S_TXCHSEL_A83T	0x30
-	#define I2S_TXCHSEL_A83T_CHNUM(v)	(((v) - 1) << 0)
-	#define I2S_TXCHSEL_A83T_CHNUM_MSK	(7 << 0)
-
-#define I2S_TXCHMAP_A83T	0x34
 
 /* --- H3 --- */
 #define I2S_TXCHCFG_H3		0x30
@@ -154,13 +123,8 @@
 #define PCM_LRCK_PERIOD_MAP_MIN        PCM_LRCK_PERIOD_MAP_RESOLUTION
 #define PERIOD_TO_MAP(period)          (1 << (((unsigned int)period) >> PCM_LRCK_PERIOD_MAP_SHIFT))
 
-
-
-#define SOC_A83T 0
-#define SOC_H3 1
-#define SOC_H5 2
-
 struct priv {
+	struct device *dev;
 	struct clk *mod_clk;
 	struct clk *bus_clk;
 	struct regmap *regmap;
@@ -184,10 +148,7 @@ struct priv {
 };
 
 static const struct of_device_id sun8i_i2s_of_match[] = {
-	{ .compatible = "allwinner,sun8i-a83t-i2s",
-				.data = (void *) SOC_A83T },
-	{ .compatible = "allwinner,sun8i-h3-i2s",
-				.data = (void *) SOC_H3 },
+	{ .compatible = "allwinner,sun8i-h3-i2s_kai" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sun8i_i2s_of_match);
@@ -203,56 +164,28 @@ static void sun8i_i2s_init(struct priv *priv)
 
 	priv->nchan = 2;
 
-	/* A83T */
-	if (priv->type == SOC_A83T) {
-		regmap_update_bits(priv->regmap, I2S_CTL,
-				   I2S_CTL_A83T_MS |		/* codec clk & FRM slave */
-					I2S_CTL_A83T_PCM,	/* I2S mode */
-				   0);
+	regmap_update_bits(priv->regmap, I2S_FCTL,
+				I2S_FCTL_FRX | I2S_FCTL_FTX,	/* clear the FIFOs */
+				0);
 
-		regmap_update_bits(priv->regmap, I2S_FAT0,
-				   I2S_FAT0_A83T_FMT_MSK,
-				   0);
-		regmap_update_bits(priv->regmap, I2S_FAT0,
-				   I2S_FAT0_A83T_FMT_I2S1,
-				   I2S_FAT0_A83T_FMT_I2S1);
-		regmap_update_bits(priv->regmap, I2S_FAT0,
-				   I2S_FAT0_A83T_LRCP | I2S_FAT0_A83T_BCP,
-				   0);
+	regmap_write(priv->regmap, I2S_TXCNT, 0); /* FIFO counters */
+	regmap_write(priv->regmap, I2S_RXCNT, 0);
 
-		regmap_write(priv->regmap, I2S_FCTL,
-			     I2S_FCTL_TXIM | /* fifo */
-				I2S_FCTL_TXTL(0x40));
+	regmap_update_bits(priv->regmap, I2S_CTL,
+				I2S_CTL_H3_LRCKOUT | I2S_CTL_H3_BCLKOUT,
+				I2S_CTL_H3_LRCKOUT | I2S_CTL_H3_BCLKOUT);
 
-		regmap_update_bits(priv->regmap, I2S_FAT0,
-				   I2S_FAT0_A83T_LRCP |		/* normal bit clock + frame */
-					I2S_FAT0_A83T_BCP,
-				   0);
-	/* H3 */
-	} else {
-		regmap_update_bits(priv->regmap, I2S_FCTL,
-				   I2S_FCTL_FRX | I2S_FCTL_FTX,	/* clear the FIFOs */
-				   0);
+	regmap_update_bits(priv->regmap, I2S_CTL,
+				I2S_CTL_H3_MODE_MSK,
+				I2S_CTL_H3_MODE_I2S);
 
-		regmap_write(priv->regmap, I2S_TXCNT, 0); /* FIFO counters */
-		regmap_write(priv->regmap, I2S_RXCNT, 0);
+	regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
+				I2S_TXn_H3_OFFSET_MSK,
+				I2S_TXn_H3_OFFSET(1));
 
-		regmap_update_bits(priv->regmap, I2S_CTL,
-				   I2S_CTL_H3_LRCKOUT | I2S_CTL_H3_BCLKOUT,
-				   I2S_CTL_H3_LRCKOUT | I2S_CTL_H3_BCLKOUT);
-
-		regmap_update_bits(priv->regmap, I2S_CTL,
-				   I2S_CTL_H3_MODE_MSK,
-				   I2S_CTL_H3_MODE_I2S);
-
-		regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
-				   I2S_TXn_H3_OFFSET_MSK,
-				   I2S_TXn_H3_OFFSET(1));
-
-		regmap_update_bits(priv->regmap, I2S_FAT0,
-				   I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY, /* normal bclk & frame */
-				   0);
-	}
+	regmap_update_bits(priv->regmap, I2S_FAT0,
+				I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY, /* normal bclk & frame */
+				0);
 }
 
 static int sun8i_i2s_lrclk_period_minimum_match(struct priv *priv, int sample_resolution)
@@ -268,7 +201,7 @@ static int sun8i_i2s_lrclk_period_minimum_match(struct priv *priv, int sample_re
 	while ( (max_period > PCM_LRCK_PERIOD_MAP_RESOLUTION) && !(priv->lrclk_period_map & PERIOD_TO_MAP(max_period)) )
 		max_period -= PCM_LRCK_PERIOD_MAP_RESOLUTION ;
 	if ( sample_resolution > max_period ) {
-		DBGOUT("%s: sample resolution round down %dbit to %dbit", __func__, sample_resolution, max_period);
+		dev_dbg(priv->dev, "%s: sample resolution round down %dbit to %dbit", __func__, sample_resolution, max_period);
 		return max_period;
 	}
 
@@ -291,7 +224,7 @@ static int sun8i_i2s_set_clock(struct priv *priv, unsigned long rate, int sample
 
 	/* calculate period */
 	period = sun8i_i2s_lrclk_period_minimum_match(priv, sample_resolution);
-	DBGOUT("%s: rate = %lu. sample_resolution = %d period = %d", __func__, rate, sample_resolution, period);
+	dev_dbg(priv->dev, "%s: rate = %lu. sample_resolution = %d period = %d", __func__, rate, sample_resolution, period);
 
 	if ( (priv->dai_fmt & SND_SOC_DAIFMT_MASTER_MASK) == SND_SOC_DAIFMT_CBS_CFS) {
 		/* compute the sys clock rate and divide values */
@@ -332,14 +265,11 @@ static int sun8i_i2s_set_clock(struct priv *priv, unsigned long rate, int sample
 			div = freq / 2 / period / rate;
 		}
 
-		if (priv->type == SOC_A83T)
-			div /= 2;			/* bclk_div==0 => mclk/2 */
-
 		for (i = 0; i < ARRAY_SIZE(div_tb) - 1; i++)
 			if (div_tb[i] >= div)
 				break;
 
-		DBGOUT("%s: mclk freq = %lu. bclk div = %u. CLKD_BCLKDIV = %u", __func__, freq, div, i+1);
+		dev_dbg(priv->dev, "%s: mclk freq = %lu. bclk div = %u. CLKD_BCLKDIV = %u", __func__, freq, div, i+1);
 
 		if (100000000 < freq) {
 			pr_info("Setting sysclk rate %lu is not supported.\n", rate );
@@ -354,35 +284,24 @@ static int sun8i_i2s_set_clock(struct priv *priv, unsigned long rate, int sample
 		{
 			unsigned long actual_rate = clk_get_rate(priv->mod_clk);
 			long error_rate  = 1000000 - ((long)freq * 1000000 / (long)actual_rate);
-			DBGOUT("%s: mclk actual freq = %lu. error = %ld ppm", __func__, actual_rate, error_rate);
+			dev_dbg(priv->dev, "%s: mclk actual freq = %lu. error = %ld ppm", __func__, actual_rate, error_rate);
 		}
 
 		/* set the mclk and bclk dividor register */
-		if (priv->type == SOC_A83T) {
-			regmap_write(priv->regmap, I2S_CLKD,
-				     I2S_CLKD_A83T_MCLKOEN | I2S_CLKD_MCLKDIV(i));
-		} else {
-			regmap_write(priv->regmap, I2S_CLKD,
-				     I2S_CLKD_H3_MCLKOEN | I2S_CLKD_MCLKDIV(1) | I2S_CLKD_BCLKDIV(i + 1));
-		}
+		regmap_write(priv->regmap, I2S_CLKD,
+					I2S_CLKD_H3_MCLKOEN | I2S_CLKD_MCLKDIV(1) | I2S_CLKD_BCLKDIV(i + 1));
 	}else{
-		DBGOUT("%s: skip pll clk_set_rate. (not in CBS_CFS mode)", __func__);
+		dev_dbg(priv->dev, "%s: skip pll clk_set_rate. (not in CBS_CFS mode)", __func__);
 	}
 
 	/* format */
-	if (priv->type == SOC_A83T) {
-		regmap_update_bits(priv->regmap, I2S_FAT0,
-				   I2S_FAT0_A83T_WSS_32BCLK | I2S_FAT0_A83T_SR_MSK,
-				   I2S_FAT0_A83T_WSS_32BCLK | I2S_FAT0_A83T_SR_16BIT);
-	} else {
-		regmap_update_bits(priv->regmap, I2S_FAT0,
-				   I2S_FAT0_H3_LRCKR_PERIOD_MSK | I2S_FAT0_H3_LRCK_PERIOD_MSK,
-				   I2S_FAT0_H3_LRCK_PERIOD(period - 1) | I2S_FAT0_H3_LRCKR_PERIOD(PCM_LRCKR_PERIOD - 1));
+	regmap_update_bits(priv->regmap, I2S_FAT0,
+				I2S_FAT0_H3_LRCKR_PERIOD_MSK | I2S_FAT0_H3_LRCK_PERIOD_MSK,
+				I2S_FAT0_H3_LRCK_PERIOD(period - 1) | I2S_FAT0_H3_LRCKR_PERIOD(PCM_LRCKR_PERIOD - 1));
 
-		regmap_update_bits(priv->regmap, I2S_FAT0,
-				   I2S_FAT0_H3_SW_MSK | I2S_FAT0_H3_SR_MSK,
-				   I2S_FAT0_H3_SW_16 | I2S_FAT0_H3_SR_16);
-	}
+	regmap_update_bits(priv->regmap, I2S_FAT0,
+				I2S_FAT0_H3_SW_MSK | I2S_FAT0_H3_SR_MSK,
+				I2S_FAT0_H3_SW_16 | I2S_FAT0_H3_SR_16);
 	regmap_write(priv->regmap, I2S_FAT1, 0);
 
 	return 0;
@@ -393,47 +312,25 @@ static void sun8i_i2s_tx_set_channels(struct priv *priv, int nchan)
 	u32 reg = 0;
 	int n;
 
-	DBGOUT("%s: nchan = %d", __func__, nchan);
+	dev_dbg(priv->dev, "%s: nchan = %d", __func__, nchan);
 
 	priv->nchan = nchan;
-	if (priv->type == SOC_A83T) {
-		regmap_update_bits(priv->regmap, I2S_TXCHSEL_A83T,
-				   I2S_TXCHSEL_A83T_CHNUM_MSK,
-				   I2S_TXCHSEL_A83T_CHNUM(nchan));
+	regmap_update_bits(priv->regmap, I2S_TXCHCFG_H3,
+				I2S_TXCHCFG_H3_TX_SLOT_NUM_MSK,
+				I2S_TXCHCFG_H3_TX_SLOT_NUM(nchan - 1));
 
-		switch (nchan) {
-		case 1:
-			regmap_write(priv->regmap, I2S_TXCHMAP_A83T,
-				     0x76543200);
-			break;
-		case 8:
-			regmap_write(priv->regmap, I2S_TXCHMAP_A83T,
-				     0x54762310);
-			break;
-		default:
-			/* left/right inversion of channels 0 and 1 */
-			regmap_write(priv->regmap, I2S_TXCHMAP_A83T,
-				     0x76543201);
-			break;
-		}
-	} else {
-		regmap_update_bits(priv->regmap, I2S_TXCHCFG_H3,
-				   I2S_TXCHCFG_H3_TX_SLOT_NUM_MSK,
-				   I2S_TXCHCFG_H3_TX_SLOT_NUM(nchan - 1));
+	regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
+				I2S_TXn_H3_CHEN_MSK,
+				I2S_TXn_H3_CHEN((0x01 << nchan) - 1));
+	regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
+				I2S_TXn_H3_CHSEL_MSK,
+				I2S_TXn_H3_CHSEL(nchan - 1));
 
-		regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
-				   I2S_TXn_H3_CHEN_MSK,
-				   I2S_TXn_H3_CHEN((0x01 << nchan) - 1));
-		regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
-				   I2S_TXn_H3_CHSEL_MSK,
-				   I2S_TXn_H3_CHSEL(nchan - 1));
-
-		reg = 0;
-		for(n = 0; n < nchan; n++) {
-			reg |= (((0x00000001 << n) - 0x00000001) << (n * 4));
-		}
-		regmap_write(priv->regmap, I2S_TX0CHMAP_H3, reg);
+	reg = 0;
+	for(n = 0; n < nchan; n++) {
+		reg |= (((0x00000001 << n) - 0x00000001) << (n * 4));
 	}
+	regmap_write(priv->regmap, I2S_TX0CHMAP_H3, reg);
 
 	reg = 0;
 	if (nchan >= 7)
@@ -451,11 +348,10 @@ static void sun8i_i2s_tx_set_channels(struct priv *priv, int nchan)
 static int sun8i_i2s_startup(struct snd_pcm_substream *substream,
 			     struct snd_soc_dai *dai)
 {
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(dai);
 	int nchan = priv->nchan;
 
-	DBGOUT("%s: reached.", __func__);
+	dev_dbg(priv->dev, "%s: reached.", __func__);
 
 	/* Enable the whole hardware block */
 	regmap_update_bits(priv->regmap, I2S_CTL,
@@ -470,7 +366,7 @@ static int sun8i_i2s_startup(struct snd_pcm_substream *substream,
 	}
 
 	if (priv->clk_always_on == 1) {
-		DBGOUT("%s: clk always on.", __func__);
+		dev_dbg(priv->dev, "%s: clk always on.", __func__);
 		return 0;
 	}else
 	if (priv->clk_always_on == 0){
@@ -483,13 +379,12 @@ static int sun8i_i2s_startup(struct snd_pcm_substream *substream,
 static void sun8i_i2s_shutdown(struct snd_pcm_substream *substream,
 			       struct snd_soc_dai *dai)
 {
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(dai);
 
-	DBGOUT("%s: reached.", __func__);
+	dev_dbg(priv->dev, "%s: reached.", __func__);
 
 	if (priv->clk_always_on == 1) {
-		DBGOUT("%s: clk always on.", __func__);
+		dev_dbg(priv->dev, "%s: clk always on.", __func__);
 		return;
 	}
 	clk_disable_unprepare(priv->mod_clk);
@@ -506,20 +401,17 @@ static int sun8i_i2s_hw_params(struct snd_pcm_substream *substream,
 			       struct snd_pcm_hw_params *params,
 			       struct snd_soc_dai *dai)
 {
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(dai);
 	int nchan = params_channels(params);
 	int sample_resolution;
 	int ret;
 
-	DBGOUT("%s: reached line %d, rate = %u, format = %d, nchan = %d.",
+	dev_dbg(priv->dev, "%s: reached line %d, rate = %u, format = %d, nchan = %d.",
 	       __func__, __LINE__,
 	       params_rate(params), params_format(params), nchan);
 
 	if (nchan < 1 || nchan > 8) return -EINVAL;
 	sun8i_i2s_tx_set_channels(priv, nchan);
-
-	DBGOUT("%s: reached line %d.", __func__, __LINE__);
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
@@ -539,8 +431,9 @@ static int sun8i_i2s_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	ret = sun8i_i2s_set_clock(priv, params_rate(params), sample_resolution);
-	if (ret)
+	if (ret) {
 		return ret;
+	}
 
 	if (sample_resolution == 16) {
 		priv->playback_dma_data.addr_width = DMA_SLAVE_BUSWIDTH_2_BYTES;
@@ -548,40 +441,22 @@ static int sun8i_i2s_hw_params(struct snd_pcm_substream *substream,
 		priv->playback_dma_data.addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 	}
 
-	DBGOUT("%s: sample_resolution = %d\n", __func__, sample_resolution);
+	dev_dbg(priv->dev, "%s: sample_resolution = %d\n", __func__, sample_resolution);
 
-	if (priv->type == SOC_A83T) {
-		if (sample_resolution == 16) {
-			regmap_update_bits(priv->regmap, I2S_FAT0,
-					   I2S_FAT0_A83T_SR_MSK,
-					   I2S_FAT0_A83T_SR_16BIT);
-			regmap_update_bits(priv->regmap, I2S_FCTL,
-					   I2S_FCTL_TXIM,
-					   I2S_FCTL_TXIM);
-		} else {
-			regmap_update_bits(priv->regmap, I2S_FAT0,
-					   I2S_FAT0_A83T_SR_MSK,
-					   I2S_FAT0_A83T_SR_24BIT);
-			regmap_update_bits(priv->regmap, I2S_FCTL,
-					   I2S_FCTL_TXIM,
-					   0);
-		}
-	} else {
-		if ((priv->dai_fmt & SND_SOC_DAIFMT_FORMAT_MASK) == SND_SOC_DAIFMT_RIGHT_J) { // RJ support
-			regmap_update_bits(priv->regmap, I2S_FAT0,
-					   I2S_FAT0_H3_SR_MSK | I2S_FAT0_H3_SW_MSK,
-					   I2S_FAT0_H3_SR(sample_resolution) | I2S_FAT0_H3_SW(priv->rj_slotwidth));
-			regmap_update_bits(priv->regmap, I2S_FCTL,
-					   I2S_FCTL_TXIM,
-					   I2S_FCTL_TXIM);
-		}else{
-			regmap_update_bits(priv->regmap, I2S_FAT0,
-					   I2S_FAT0_H3_SR_MSK | I2S_FAT0_H3_SW_MSK,
-					   I2S_FAT0_H3_SR(sample_resolution) | I2S_FAT0_H3_SW(sample_resolution));
-			regmap_update_bits(priv->regmap, I2S_FCTL,
-					   I2S_FCTL_TXIM,
-					   I2S_FCTL_TXIM);
-		}
+	if ((priv->dai_fmt & SND_SOC_DAIFMT_FORMAT_MASK) == SND_SOC_DAIFMT_RIGHT_J) { // RJ support
+		regmap_update_bits(priv->regmap, I2S_FAT0,
+					I2S_FAT0_H3_SR_MSK | I2S_FAT0_H3_SW_MSK,
+					I2S_FAT0_H3_SR(sample_resolution) | I2S_FAT0_H3_SW(priv->rj_slotwidth));
+		regmap_update_bits(priv->regmap, I2S_FCTL,
+					I2S_FCTL_TXIM,
+					I2S_FCTL_TXIM);
+	}else{
+		regmap_update_bits(priv->regmap, I2S_FAT0,
+					I2S_FAT0_H3_SR_MSK | I2S_FAT0_H3_SW_MSK,
+					I2S_FAT0_H3_SR(sample_resolution) | I2S_FAT0_H3_SW(sample_resolution));
+		regmap_update_bits(priv->regmap, I2S_FCTL,
+					I2S_FCTL_TXIM,
+					I2S_FCTL_TXIM);
 	}
 
 	/* flush TX FIFO */
@@ -594,52 +469,36 @@ static int sun8i_i2s_hw_params(struct snd_pcm_substream *substream,
 
 static int sun8i_i2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(dai);
 
-	DBGOUT("%s: fmt = 0x%x.", __func__, fmt);
+	dev_dbg(priv->dev, "%s: fmt = 0x%x.", __func__, fmt);
 	priv->dai_fmt = fmt;
 
 	/* DAI Mode */
 	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_I2S:
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_MODE_MSK,
-					   I2S_CTL_H3_MODE_I2S);
-			regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
-					   I2S_TXn_H3_OFFSET_MSK,
-					   I2S_TXn_H3_OFFSET(1));
-		}
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_MODE_MSK,
+					I2S_CTL_H3_MODE_I2S);
+		regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
+					I2S_TXn_H3_OFFSET_MSK,
+					I2S_TXn_H3_OFFSET(1));
 		break;
 	case SND_SOC_DAIFMT_LEFT_J:
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_MODE_MSK,
-					   I2S_CTL_H3_MODE_I2S);
-			regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
-					   I2S_TXn_H3_OFFSET_MSK,
-					   I2S_TXn_H3_OFFSET(0));
-		}
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_MODE_MSK,
+					I2S_CTL_H3_MODE_I2S);
+		regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
+					I2S_TXn_H3_OFFSET_MSK,
+					I2S_TXn_H3_OFFSET(0));
 		break;
 	case SND_SOC_DAIFMT_RIGHT_J:
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_MODE_MSK,
-					   I2S_CTL_H3_MODE_RGT);
-			regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
-					   I2S_TXn_H3_OFFSET_MSK,
-					   I2S_TXn_H3_OFFSET(0));
-		}
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_MODE_MSK,
+					I2S_CTL_H3_MODE_RGT);
+		regmap_update_bits(priv->regmap, I2S_TX0CHSEL_H3,
+					I2S_TXn_H3_OFFSET_MSK,
+					I2S_TXn_H3_OFFSET(0));
 		break;
 	default:
 		return -EINVAL;
@@ -649,50 +508,26 @@ static int sun8i_i2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
 	case SND_SOC_DAIFMT_IB_IF:
 		/* Invert both clocks */
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_FAT0,
-					   I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY,
-					   I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY);
-		}
+		regmap_update_bits(priv->regmap, I2S_FAT0,
+					I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY,
+					I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY);
 		break;
 	case SND_SOC_DAIFMT_IB_NF:
-		/* Invert bit clock */
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_FAT0,
-					   I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY,
-					   I2S_FAT0_H3_BCLK_POLARITY);
-		}
-
+		regmap_update_bits(priv->regmap, I2S_FAT0,
+					I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY,
+					I2S_FAT0_H3_BCLK_POLARITY);
 		break;
 	case SND_SOC_DAIFMT_NB_IF:
 		/* Invert frame clock */
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_FAT0,
-					   I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY,
-					   I2S_FAT0_H3_LRCK_POLARITY);
-		}
-
+		regmap_update_bits(priv->regmap, I2S_FAT0,
+					I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY,
+					I2S_FAT0_H3_LRCK_POLARITY);
 		break;
 	case SND_SOC_DAIFMT_NB_NF:
 		/* Nothing to do for both normal cases */
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_FAT0,
-					   I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY,
-					   0);
-		}
-
+		regmap_update_bits(priv->regmap, I2S_FAT0,
+					I2S_FAT0_H3_BCLK_POLARITY | I2S_FAT0_H3_LRCK_POLARITY,
+					0);
 		break;
 	default:
 		return -EINVAL;
@@ -701,55 +536,40 @@ static int sun8i_i2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	/* DAI clock master masks */
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
 	case SND_SOC_DAIFMT_CBS_CFS:
-		/* Master */
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_CLKD,
-					   I2S_CLKD_H3_MCLKOEN,
-					   I2S_CLKD_H3_MCLKOEN);
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_BCLKOUT,
-					   I2S_CTL_H3_BCLKOUT);
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_LRCKOUT,
-					   I2S_CTL_H3_LRCKOUT);
-		}
+		/* DAI Master */
+		regmap_update_bits(priv->regmap, I2S_CLKD,
+					I2S_CLKD_H3_MCLKOEN,
+					I2S_CLKD_H3_MCLKOEN);
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_BCLKOUT,
+					I2S_CTL_H3_BCLKOUT);
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_LRCKOUT,
+					I2S_CTL_H3_LRCKOUT);
 		break;
 	case SND_SOC_DAIFMT_CBM_CFM:
-		/* Slave */
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_CLKD,
-					   I2S_CLKD_H3_MCLKOEN,
-					   0);
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_BCLKOUT,
-					   0);
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_LRCKOUT,
-					   0);
-		}	
+		/* Codec Master */
+		regmap_update_bits(priv->regmap, I2S_CLKD,
+					I2S_CLKD_H3_MCLKOEN,
+					0);
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_BCLKOUT,
+					0);
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_LRCKOUT,
+					0);
 		break;
 	case SND_SOC_DAIFMT_CBM_CFS:
 		/* Bclk Slave / LRclk master */
-		if (priv->type == SOC_A83T) {
-			// TODO
-			return -EINVAL;
-		} else {
-			regmap_update_bits(priv->regmap, I2S_CLKD,
-					   I2S_CLKD_H3_MCLKOEN,
-					   0);
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_BCLKOUT,
-					   0);
-			regmap_update_bits(priv->regmap, I2S_CTL,
-					   I2S_CTL_H3_LRCKOUT,
-					   I2S_CTL_H3_LRCKOUT);
-		}	
+		regmap_update_bits(priv->regmap, I2S_CLKD,
+					I2S_CLKD_H3_MCLKOEN,
+					0);
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_BCLKOUT,
+					0);
+		regmap_update_bits(priv->regmap, I2S_CTL,
+					I2S_CTL_H3_LRCKOUT,
+					I2S_CTL_H3_LRCKOUT);
 		break;
 	default:
 		return -EINVAL;
@@ -761,8 +581,7 @@ static int sun8i_i2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 static int sun8i_i2s_set_bclk_ratio(struct snd_soc_dai *dai,
 				      unsigned int ratio)
 {
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(dai);
 
 	priv->fs = ratio;
 
@@ -772,8 +591,7 @@ static int sun8i_i2s_set_bclk_ratio(struct snd_soc_dai *dai,
 static int sun8i_i2s_set_bclk_clkdiv(struct snd_soc_dai *dai,
 				      int div_id, int div)
 {
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(dai);
 
 	priv->div = div;
 
@@ -818,7 +636,7 @@ static void sun8i_i2s_stop_playback(struct priv *priv)
 				   I2S_CTL_TXEN,
 				   0);
 	}else{
-		DBGOUT("%s: clk always on.", __func__);
+		dev_dbg(priv->dev, "%s: clk always on.", __func__);
 	}
 
 	/* Disable TX DRQ */
@@ -830,10 +648,9 @@ static void sun8i_i2s_stop_playback(struct priv *priv)
 static int sun8i_i2s_trigger(struct snd_pcm_substream *substream,
 				int cmd, struct snd_soc_dai *dai)
 {
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(dai);
 
-	DBGOUT("%s: cmd = %d, substream->stream = %d\n",
+	dev_dbg(priv->dev, "%s: cmd = %d, substream->stream = %d\n",
 	       __func__, cmd, substream->stream);
 
 	switch (cmd) {
@@ -876,8 +693,7 @@ static int sun8i_i2s_controls_get(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_dai *cpu_dai = snd_kcontrol_chip(kcontrol);
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(cpu_dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
 
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
@@ -896,8 +712,7 @@ static int sun8i_i2s_controls_set(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_dai *cpu_dai = snd_kcontrol_chip(kcontrol);
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(cpu_dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
 
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
@@ -922,8 +737,7 @@ static const struct snd_kcontrol_new sun8i_i2s_controls[] = {
 
 static int sun8i_i2s_dai_probe(struct snd_soc_dai *dai)
 {
-	struct snd_soc_card *card = snd_soc_dai_get_drvdata(dai);
-	struct priv *priv = snd_soc_card_get_drvdata(card);
+	struct priv *priv = snd_soc_dai_get_drvdata(dai);
 
 	snd_soc_dai_init_dma_data(dai, &priv->playback_dma_data, NULL);
 	snd_soc_add_dai_controls(dai, sun8i_i2s_controls, ARRAY_SIZE(sun8i_i2s_controls));
@@ -944,7 +758,7 @@ static struct snd_soc_dai_driver sun8i_i2s_dai = {
 		.formats = I2S_FORMATS,
 	},
 	.ops = &sun8i_i2s_dai_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate        = true,
 };
 
 static const struct snd_soc_component_driver sun8i_i2s_component = {
@@ -977,53 +791,6 @@ static const struct snd_dmaengine_pcm_config sun8i_i2s_config = {
 	.prealloc_buffer_size = 1024 * 1024,
 };
 
-/* --- audio card --- */
-
-static struct device_node *sun8i_get_codec_by_remote_port(struct device *dev)
-{
-	struct device_node *ep, *remote;
-
-	ep = of_graph_get_next_endpoint(dev->of_node, NULL);
-	if (!ep)
-		return NULL;
-	remote = of_graph_get_remote_port_parent(ep);
-	of_node_put(ep);
-
-	return remote;
-}
-
-static int sun8i_get_codecs(struct device *dev, struct snd_soc_dai_link_component *codecs, int node_max)
-{
-	struct of_phandle_args args;
-	int ret, cnt, i;
-
-	cnt = of_count_phandle_with_args(dev->of_node, "sound-dai", "#sound-dai-cells");
-	DBGOUT("%s: sound-dai = %d", __func__, cnt);
-
-	if ( cnt < 1 ){ 
-		DBGOUT("%s: Can't find codec by \"sound-dai\", try \"remote-port\" ...\n", __func__);
-		codecs[0].of_node = sun8i_get_codec_by_remote_port(dev);
-		if (codecs[0].of_node) {
-			return 1;
-		}else{
-			return 0;
-		}
-	}
-
-	for ( i = 0; i < cnt && i < node_max ; i++ ) {
-		ret = of_parse_phandle_with_args(dev->of_node, "sound-dai",
-					 "#sound-dai-cells", i, &args);
-		if (ret) {
-			DBGOUT("%s: Can't find codec by \"sound-dai\"\n", __func__);
-			return 0;
-		}
-		codecs[i].of_node = args.np;
-	}
-
-	return i;
-}
-
-
 static int snd_sun8i_dac_init(struct snd_soc_pcm_runtime *rtd)
 {
 	return 0;
@@ -1040,8 +807,8 @@ static struct snd_soc_ops snd_sun8i_dac_ops = {
 };
 
 static struct snd_soc_dai_link snd_sun8i_dac_dai = {
-	.name		= "sun8i-i2s-dac",
-	.stream_name	= "sun8i-i2s-dac",
+	.name		= "h3/h5-i2s-dac",
+	.stream_name	= "h3/h5-i2s-dac",
 	.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 			  SND_SOC_DAIFMT_CBS_CFS,
 	.ops		= &snd_sun8i_dac_ops,
@@ -1051,65 +818,6 @@ static struct snd_soc_dai_link snd_sun8i_dac_dai = {
 static const struct snd_soc_card snd_sun8i_dac = {
 	.name		= "snd-sun8i-i2s-dac",
 };
-
-static int sun8i_card_create(struct device *dev, struct priv *priv)
-{
-	struct snd_soc_card *card;
-	struct snd_soc_dai_link *dai_link;
-	struct snd_soc_dai_link_component *codecs;
-	int num_codecs, i;
-
-	card = devm_kzalloc(dev, sizeof(*card), GFP_KERNEL);
-	if (!card)
-		return -ENOMEM;
-	dai_link = devm_kzalloc(dev, sizeof(*dai_link), GFP_KERNEL);
-	if (!dai_link)
-		return -ENOMEM;
-	codecs = devm_kzalloc(dev, sizeof(struct snd_soc_dai_link_component)*MAX_CODECS_NUM, GFP_KERNEL);
-	if (!codecs)
-		return -ENOMEM;
-
-	num_codecs = sun8i_get_codecs(dev, codecs, MAX_CODECS_NUM);
-	if (!num_codecs) {
-		dev_err(dev, "no port node\n");
-		card->dev = dev;
-		dev_set_drvdata(dev, card);
-		snd_soc_card_set_drvdata(card, priv);
-		// free
-		devm_kfree(dev, dai_link);
-		devm_kfree(dev, codecs);
-		return 0;
-	}
-	// set dai name
-	for (i=0; i < num_codecs; i++) {
-		if (snd_soc_of_get_dai_name(dev->of_node, &codecs[i].dai_name) < 0 ) {
-			dev_err(dev, "%s: failed to find dai name, use codec's name as dai name.\n", __func__);
-			codecs[i].dai_name = codecs[i].of_node->name;
-		}
-	}
-	DBGOUT("%s: dai_name=\"%s\"\n", __func__, codecs[0].dai_name);
-
-	card->name = snd_sun8i_dac.name;
-	card->dai_link = dai_link;
-	card->num_links = 1;
-
-	dai_link->name = snd_sun8i_dac_dai.name;
-	dai_link->stream_name = snd_sun8i_dac_dai.stream_name;
-	dai_link->dai_fmt = snd_sun8i_dac_dai.dai_fmt;
-	dai_link->ops = snd_sun8i_dac_dai.ops;
-	dai_link->init = snd_sun8i_dac_dai.init; 
-	dai_link->cpu_of_node = dev->of_node;
-	dai_link->platform_of_node = dev->of_node;
-
-	dai_link->codecs = codecs;
-	dai_link->num_codecs = num_codecs;
-
-	card->dev = dev;
-	dev_set_drvdata(dev, card);
-	snd_soc_card_set_drvdata(card, priv);
-
-	return devm_snd_soc_register_card(dev, card);
-}
 
 /* --- regmap --- */
 
@@ -1177,31 +885,11 @@ static const struct regmap_config sun8i_i2s_regmap_h3_config = {
 	.volatile_reg		= sun8i_i2s_volatile_reg,
 };
 
-static const struct reg_default sun8i_i2s_reg_a83t_defaults[] = {
-	// TODO
-	{ I2S_CTL, 0x00000000 },
-};
-
-static const struct regmap_config sun8i_i2s_regmap_a83t_config = {
-	.reg_bits		= 32,
-	.reg_stride		= 4,
-	.val_bits		= 32,
-	.max_register		= I2S_TXCHMAP_A83T, // TODO
-
-	.cache_type		= REGCACHE_FLAT,
-	.reg_defaults		= sun8i_i2s_reg_a83t_defaults,
-	.num_reg_defaults	= ARRAY_SIZE(sun8i_i2s_reg_a83t_defaults),
-	.writeable_reg		= sun8i_i2s_wr_reg,
-	.readable_reg		= sun8i_i2s_rd_reg,
-	.volatile_reg		= sun8i_i2s_volatile_reg,
-};
-
 /* --- pm --- */
 
 static int sun8i_i2s_runtime_resume(struct device *dev)
 {
-	struct snd_soc_card *card = dev_get_drvdata(dev);
-	struct priv *priv = snd_soc_card_get_drvdata(card); 
+	struct priv *priv = dev_get_drvdata(dev);
 	int ret;
 
 	if (!IS_ERR_OR_NULL(priv->bus_clk)) {
@@ -1230,8 +918,7 @@ err_disable_clk:
 
 static int sun8i_i2s_runtime_suspend(struct device *dev)
 {
-	struct snd_soc_card *card = dev_get_drvdata(dev);
-	struct priv *priv = snd_soc_card_get_drvdata(card); 
+	struct priv *priv = dev_get_drvdata(dev);
 
 	regcache_cache_only(priv->regmap, true);
 	regcache_mark_dirty(priv->regmap);
@@ -1257,12 +944,12 @@ static void sun8i_i2s_parse_device_tree_options(struct device *dev, struct priv 
 			ret = of_property_read_string_index(dev->of_node, "lrclk_periods", i, &output);
 			if (ret) break;
 			priv->lrclk_period_map |= PERIOD_TO_MAP(simple_strtol(output, &endp, 10));
-			DBGOUT("%s: lrclk_periods[%d] = %s\n", __func__, i,output);
+			dev_dbg(dev, "%s: lrclk_periods[%d] = %s\n", __func__, i,output);
 		}
 	}else{
 		priv->lrclk_period_map = PERIOD_TO_MAP(32); // default 64fs only
 	}
-	DBGOUT("%s: priv->lrclk_period_map = %x\n", __func__, priv->lrclk_period_map);
+	dev_dbg(dev, "%s: priv->lrclk_period_map = %x\n", __func__, priv->lrclk_period_map);
 
 	/* get mclk max frequency */
 	{
@@ -1271,7 +958,7 @@ static void sun8i_i2s_parse_device_tree_options(struct device *dev, struct priv 
 		ret = of_property_read_u32(dev->of_node, "mclk_max_freq", &output);
 		if (ret == 0){
 			priv->mclk_max_freq = output;
-			DBGOUT("%s: priv->mclk_max_freq = %d\n", __func__, priv->mclk_max_freq);
+			dev_dbg(dev, "%s: priv->mclk_max_freq = %d\n", __func__, priv->mclk_max_freq);
 		}
 	}
 
@@ -1354,7 +1041,7 @@ static void sun8i_i2s_parse_device_tree_options(struct device *dev, struct priv 
 		ret = of_property_read_u32(dev->of_node, "rj_slotwidth", &output);
 		if (ret == 0){
 			priv->rj_slotwidth = output;
-			DBGOUT("%s: priv->rj_slotwidth = %d\n", __func__, priv->rj_slotwidth);
+			dev_dbg(dev, "%s: priv->rj_slotwidth = %d\n", __func__, priv->rj_slotwidth);
 		}
 	}
 
@@ -1365,7 +1052,7 @@ static void sun8i_i2s_parse_device_tree_options(struct device *dev, struct priv 
 		ret = of_property_read_u32(dev->of_node, "clk_always_on", &output);
 		if (ret == 0 && output == 1){
 			priv->clk_always_on = 0; // clk alwasys on enable, set clk stop state.
-			DBGOUT("%s: priv->clk_always_on = enabled\n", __func__);
+			dev_dbg(dev, "%s: priv->clk_always_on = enabled\n", __func__);
 		}
 	}
 
@@ -1399,7 +1086,7 @@ static int sun8i_i2s_dev_probe(struct platform_device *pdev)
 		dev_err(dev, "Can't request IO region\n");
 		return PTR_ERR(mmio);
 	}
-	DBGOUT("%s: resource=%pR, name=%s, mmio=%p\n", __func__, res, res->name, mmio);
+	dev_dbg(dev, "%s: resource=%pR, name=%s, mmio=%p\n", __func__, res, res->name, mmio);
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
@@ -1409,7 +1096,7 @@ static int sun8i_i2s_dev_probe(struct platform_device *pdev)
 
 	/* get SoC type */
 	priv->type = (long int) of_match_device(sun8i_i2s_of_match, &pdev->dev)->data;
-	DBGOUT("%s: priv->type = %d\n", __func__, priv->type);
+	dev_dbg(dev, "%s: priv->type = %d\n", __func__, priv->type);
 
 	/* get and enable the clocks */
 	priv->bus_clk = devm_clk_get(dev, "apb");	/* optional */
@@ -1426,10 +1113,7 @@ static int sun8i_i2s_dev_probe(struct platform_device *pdev)
 
 	sun8i_i2s_parse_device_tree_options(dev, priv);
 
-	if (priv->type == SOC_A83T)
-		priv->regmap = devm_regmap_init_mmio(dev, mmio, &sun8i_i2s_regmap_a83t_config);
-	else
-		priv->regmap = devm_regmap_init_mmio(dev, mmio, &sun8i_i2s_regmap_h3_config);
+	priv->regmap = devm_regmap_init_mmio(dev, mmio, &sun8i_i2s_regmap_h3_config);
 	if (IS_ERR(priv->regmap)) {
 		dev_err(dev, "Regmap initialisation failed\n");
 		return PTR_ERR(priv->regmap);
@@ -1453,6 +1137,9 @@ static int sun8i_i2s_dev_probe(struct platform_device *pdev)
 			goto err_pm_disable;
 	}
 
+	priv->dev = &pdev->dev;
+	dev_set_drvdata(&pdev->dev, priv);
+
 	/* activate the audio subsystem */
 	sun8i_i2s_init(priv);
 
@@ -1467,13 +1154,6 @@ static int sun8i_i2s_dev_probe(struct platform_device *pdev)
 	ret = devm_snd_dmaengine_pcm_register(dev, &sun8i_i2s_config, 0);
 	if (ret) {
 		dev_err(dev, "Could not register PCM, error_code = %d\n", ret);
-		goto err_suspend;
-	}
-
-	ret = sun8i_card_create(dev, priv);
-	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "register card failed %d\n", ret);
 		goto err_suspend;
 	}
 
@@ -1493,8 +1173,7 @@ err_pm_disable:
 
 static int sun8i_i2s_dev_remove(struct platform_device *pdev)
 {
-	struct snd_soc_card *card = dev_get_drvdata(&pdev->dev);
-	struct priv *priv = snd_soc_card_get_drvdata(card); 
+	struct priv *priv = dev_get_drvdata(&pdev->dev);
 
 	snd_dmaengine_pcm_unregister(&pdev->dev);
 
@@ -1526,5 +1205,6 @@ module_platform_driver(sun8i_i2s_driver);
 
 MODULE_AUTHOR("Jean-Francois Moine <moinejf at free.fr>");
 MODULE_AUTHOR("Anthony Lee <don.anthony.lee at gmail.com>");
-MODULE_DESCRIPTION("Allwinner sun8i I2S ASoC Interface");
+MODULE_AUTHOR("__tkz__ <tkz at lrclk.com>");
+MODULE_DESCRIPTION("Allwinner sun8i I2S ASoC Interface for Nanopi NEO/NEO2 series");
 MODULE_LICENSE("GPL v2");
