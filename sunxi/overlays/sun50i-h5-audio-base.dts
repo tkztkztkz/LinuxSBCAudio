@@ -1,0 +1,142 @@
+// Definitions for Generic NanoPi NEO/NEO2 overlay base for i2s audio application
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "friendlyelec,nanopi-neo2", "friendlyelec,nanopi-neo-plus2", "allwinner,sun50i-h5";
+
+
+	fragment@0 {
+        target-path = "/aliases";
+		__overlay__ {
+			mmc0="/soc/mmc@1c0f000"; // SD card
+			mmc1="/soc/mmc@1c11000"; // eMMC
+			mmc2="/soc/mmc@1c10000"; // SDIO
+        };
+	}; 
+
+	fragment@1 {
+        target-path = "/__symbols__";
+		__overlay__ {
+			mmc0="/soc/mmc@1c0f000"; // SD card
+			mmc1="/soc/mmc@1c11000"; // eMMC
+			mmc2="/soc/mmc@1c10000"; // SDIO
+        };
+	};
+	fragment@2 {
+		target = <&pio>;
+		__overlay__ {
+            spi0_cs_pins: spi0_cs_pins {
+                pins = "PC3";
+                function = "gpio_out";
+            };
+            i2s0_pins: i2s0 {
+                pins = "PA18", "PA19", "PA20", "PA21";
+				function = "i2s0";
+            };
+            i2s0_mclk_pins: i2s0_mclk {
+                pins = "PA6", "PA18", "PA19", "PA20", "PA21"; // enable MCLK output
+				function = "i2s0";
+            };
+        };
+	};
+
+	fragment@3 {
+		target = <&codec>;
+		__overlay__ {
+			status = "disabled"; // disable analog codec
+		};
+	};
+
+	fragment@4 {
+		target = <&codec_analog>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+    fragment@5 {
+		target-path = "/soc/i2c@1c2b000";
+		__overlay__ {
+            /* Disable i2c1, which conflicts with i2s */
+			status = "disabled";
+		};
+	};
+
+	fragment@6 {
+		target = <&i2s0>;
+		__overlay__ {
+            compatible = "allwinner,sun8i-h3-i2s_kai";
+			status = "disabled";
+ 			pinctrl-names = "default";
+ 			pinctrl-0 = <&i2s0_mclk_pins>;
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+        };
+	};
+
+	fragment@7 {
+		target = <&usb_otg>;
+		__overlay__ {
+			dr_mode = "otg";
+		};
+	};
+
+// GPU disable
+    fragment@20 {
+        target = <&mali>;
+		__overlay__ {
+			status = "disabled";
+        };
+    };
+    fragment@21 {
+        target-path = "/soc/video-codec@1c0e000";
+		__overlay__ {
+			status = "disabled";
+        };
+    };
+    fragment@22 {
+        target = <&deinterlace>;
+		__overlay__ {
+			status = "disabled";
+        };
+    };
+    fragment@23 {
+        target = <&mixer0>;
+		__overlay__ {
+			status = "disabled";
+        };
+    };
+    fragment@24 {
+        target = <&tcon0>;
+		__overlay__ {
+			status = "disabled";
+        };
+    };
+
+
+// crypto engine disable
+    fragment@40 {
+        target = <&crypto>;
+		__overlay__ {
+			status = "disabled";
+        };
+    };
+
+// internal rtc disable
+    fragment@50 {
+        target = <&rtc>;
+		__overlay__ {
+			status = "disabled";
+        };
+    };
+
+// wdt disable
+    fragment@51 {
+        target = <&wdt0>;
+		__overlay__ {
+			status = "disabled";
+        };
+    };
+};
+

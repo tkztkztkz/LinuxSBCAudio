@@ -1,0 +1,22 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+        target-path = "/aliases";
+		__overlay__ {
+			mmc1="/soc/mmc@1c0f000"; // SD card
+			mmc0="/soc/mmc@1c11000"; // eMMC
+			mmc2="/soc/mmc@1c10000"; // SDIO
+        };
+	}; 
+
+	fragment@1 {
+        target-path = "/__symbols__";
+		__overlay__ {
+			mmc1="/soc/mmc@1c0f000"; // SD card
+			mmc0="/soc/mmc@1c11000"; // eMMC
+			mmc2="/soc/mmc@1c10000"; // SDIO
+        };
+	};
+};

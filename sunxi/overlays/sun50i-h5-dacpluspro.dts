@@ -1,0 +1,67 @@
+// Definitions for HiFiBerry DAC+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "friendlyelec,nanopi-neo2", "friendlyelec,nanopi-neo-plus2", "allwinner,sun50i-h5";
+
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            dacpro_osc: dacpro_osc {
+                compatible = "hifiberry,dacpro-clk";
+                #clock-cells = <0>;
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&i2s0>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@2 {
+        target = <&i2c0>;
+        __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            pcm5122@4d {
+                #sound-dai-cells = <0>;
+                compatible = "ti,pcm5122";
+                reg = <0x4d>;
+                clocks = <&dacpro_osc>;
+                AVDD-supply = <&reg_vcc3v3>;
+                DVDD-supply = <&reg_vcc3v3>;
+                CPVDD-supply = <&reg_vcc3v3>;
+                status = "okay";
+            };
+            hpamp: hpamp@60 {
+                compatible = "ti,tpa6130a2";
+                reg = <0x60>;
+                status = "disabled";
+            };
+        };
+    };
+
+    fragment@3 {
+        target-path = "/";
+		__overlay__ {
+            hifiberry_dacplus: sound {
+                compatible = "hifiberry,hifiberry-dacplus";
+                i2s-controller = <&i2s0>;
+                status = "okay";
+            };
+        };
+    };
+
+    __overrides__ {
+        24db_digital_gain =
+            <&hifiberry_dacplus>,"hifiberry,24db_digital_gain?";
+        slave = <&hifiberry_dacplus>,"hifiberry-dacplus,slave?";
+        leds_off = <&hifiberry_dacplus>,"hifiberry-dacplus,leds_off?";
+    };
+};

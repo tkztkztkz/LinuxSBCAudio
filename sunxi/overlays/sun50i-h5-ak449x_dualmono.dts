@@ -1,0 +1,65 @@
+// Definitions for NanoPiNeo + ak449x dac
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "friendlyelec,nanopi-neo2", "friendlyelec,nanopi-neo-plus2", "allwinner,sun50i-h5";
+
+	fragment@0 {
+		target = <&i2c0>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			ak449x1: ak449x-codec@10 {
+				#sound-dai-cells = <0>;
+				compatible = "asahi-kasei,ak449x";
+				reg = <0x10>; /* I2C addr */
+				status = "okay";
+
+				chip = "AK4495"; /* AK4490/AK4495/AK4497/AK4493 */
+				chmode = "MONO_LCH"; /* STEREO/STEREO_INVERT/MONO_LCH/MONO_RCH */
+				phase = "LIRN";  /* LNRN LNRI LIRN LIRI - N=non-invert I=invert*/
+				reset-gpios = <&pio 6 7 1>; /* PG7 */ /* pdn pin */
+				mute-gpios = <&pio 6 8 1>; /* PG8 */ /* external mute */
+			};
+			ak449x2: ak449x-codec@11 {
+				#sound-dai-cells = <0>;
+				compatible = "asahi-kasei,ak449x";
+				reg = <0x11>; /* I2C addr */
+				status = "okay";
+
+				chip = "AK4495"; /* AK4490/AK4495/AK4497/AK4493 */
+				chmode = "MONO_RCH"; /* STEREO/STEREO_INVERT/MONO_LCH/MONO_RCH */
+				phase = "LIRN"; /* LNRN LNRI LIRN LIRI - N=non-invert I=invert*/
+			};
+		};
+	};
+
+    fragment@1 {
+        target = <&i2s0>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+	fragment@2 {
+        target-path = "/";
+		__overlay__ {
+            sound {
+				compatible = "i2smfdl,multi-function-dai-link";
+				i2s-controller = <&i2s0>;
+				i2s-codec = <&ak449x1 &ak449x2>;
+				status = "okay";
+
+				clk_mode = "NORMAL";
+				min_fs  = <64>; /* 0 = slotwidth * 2 */
+				max_fs  = <1024>;
+
+				daifmt_master_override = "CBS_CFS";
+			};
+		};
+	};
+};
+

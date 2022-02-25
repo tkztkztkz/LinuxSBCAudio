@@ -1,0 +1,35 @@
+// Definitions for Generic I2S DAC
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@1 {
+        target-path = "/";
+		__overlay__ {
+            sound {
+                compatible = "i2smfdl,multi-function-dai-link";
+                i2s-controller = <&i2s>;
+                i2s-codec = <&pcm5102a>;
+                status = "okay";
+
+                clk_mode = "NORMAL";
+                daifmt_master_override ="CBS_CFS";
+
+                min_fs  = <32>; /* 0 = slotwidth * 2 */
+                max_fs  = <1024>;
+            };
+		};
+	};
+
+    fragment@2 {
+        target-path = "/";
+        __overlay__ {
+            pcm5102a: pcm5102a-codec {
+                #sound-dai-cells = <0>;
+                compatible = "ti,pcm5102a";
+                status = "okay";
+            };
+        };
+    };
+};
+

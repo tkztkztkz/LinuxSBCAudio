@@ -1,0 +1,91 @@
+// Definitions for si5351a I2S master
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			ref25: oscillator {
+				compatible = "fixed-clock";
+				#clock-cells = <0>;
+				clock-frequency = <25000000>;
+		   };
+		};
+	};
+
+	fragment@1 {
+		target = <&i2c0>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			si5351: clock-generator@60 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				#clock-cells = <1>;
+				compatible = "silabs,si5351a-msop";
+				reg = <0x60>;
+
+				/* connect xtal input to 25MHz reference */
+				clocks = <&ref25>;
+				clock-names = "xtal";
+
+				/* connect xtal input as source of pll0 and pll1 */
+				silabs,pll-source = <0 0>, <1 0>;
+
+				clkout0@0 {
+					reg = <0>;
+					silabs,drive-strength = <8>;
+					silabs,multisynth-source = <0>;
+					silabs,clock-source = <0>;
+					silabs,pll-master;
+					silabs,disable-state = <2>;
+					clock-frequency = <22579200>;
+				};
+
+				clkout1@1 {
+					reg = <1>;
+					silabs,drive-strength = <8>;
+					silabs,multisynth-source = <0>;
+					silabs,clock-source = <0>;
+					silabs,disable-state = <2>;
+					clock-frequency = <2822400>;
+				};
+
+				clkout2@2 {
+					reg = <2>;
+					silabs,drive-strength = <8>;
+					silabs,multisynth-source = <0>;
+					silabs,clock-source = <0>;
+					silabs,disable-state = <2>;
+					clock-frequency = <44100>;
+				};
+			};
+		};
+	};
+
+	fragment@2 {
+        target-path = "/";
+		__overlay__ {
+            sound {
+				clk_mode = "EXT_3CLK";
+				clocks = <&si5351 0>, <&si5351 1>, <&si5351 2>;
+				clock-names = "mclk", "bclk", "lrclk";
+				min_mclk = <20000000>;
+				min_fs = <64>;
+				daifmt_master_override = "CBM_CFM";
+				mclk_transition_wait = <200>;
+			};
+		};
+	};
+
+	fragment@4 {
+		target = <&i2s0>;
+		__overlay__ {
+ 			pinctrl-0 = <&i2s0_pins>; // disable mclk outout
+        };
+	};
+};
+
